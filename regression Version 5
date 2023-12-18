@@ -1,0 +1,198 @@
+# -*- coding: utf-8 -*-
+
+#def imports():
+#    from google.colab import auth
+ #   from google.cloud import bigquery
+  #  from google.colab import data_table
+
+
+#algorithm to fix imbalanced sample
+  #!pip install -U imbalanced-learn
+
+def load_tables():
+   # load startup_table as "df"
+   df = pd.read_csv('/Users/malikvoss/Documents/Programming/startup_table.csv')
+   # load indicators_table
+   indicators_table = pd.read_csv('/Users/malikvoss/Documents/Programming/indicators_table.csv')
+   
+   return df, indicators_table
+def rounds_avg_features_creation(df):
+  average_round_a = df['round_A'].mean()
+  #df['round_A_percentage'] = df['round_A'] / average_round_a
+
+  average_round_b = df['round_B'].mean()
+  #df['round_B_percentage'] = df['round_B'] / average_round_b
+
+  average_round_c = df['round_C'].mean()
+  #df['round_C_percentage'] = df['round_C'] / average_round_c
+
+  average_round_d = df['round_D'].mean()
+  #df['round_D_percentage'] = df['round_D'] / average_round_d
+
+  return df, average_round_a, average_round_b, average_round_c, average_round_d
+def model_build(df):
+  label_encoder_market = LabelEncoder()
+
+  #label encoder to convert string to int64
+  df['market_numeric'] = label_encoder_market.fit_transform(df['market'])
+
+  label_encoder_country = LabelEncoder()
+  df['country_numeric'] = label_encoder_country.fit_transform(df['country_code'])
+
+  #loading the target and features
+  y = df['success']
+  X = df[['market_numeric','country_numeric','nb_categories','round_B_growth',
+       'round_C_growth', 'round_D_growth', 'round_A_percentage',
+       'round_B_percentage', 'round_C_percentage', 'round_D_percentage','time_to_last_funding', 'time_to_first_funding']]
+
+  #train-test split
+  X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+  # balancing the 0 and 1 to avoid bias
+
+  rus = RandomUnderSampler(random_state=42)
+  X_train_res, y_train_res = rus.fit_resample(X_train, y_train)
+
+  y_train_res = y_train_res
+  y_test = pd.DataFrame(y_test)
+
+  scaler = RobustScaler()
+  X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train_res), columns=scaler.get_feature_names_out(), index=X_train_res.index)
+  X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=scaler.get_feature_names_out(),index=X_test.index)
+
+  # train model
+  clf = LogisticRegression()
+  clf.fit(X_train_scaled, y_train_res)
+
+  # store predictions
+  y_pred = pd.DataFrame(clf.predict(X_test_scaled))
+
+  #print(y_pred.value_counts())
+
+  accuracy_test = clf.score(X_test_scaled, y_test)
+
+  #print(f"test data accuracy = {round(accuracy_test,3)}")
+
+  return clf, label_encoder_market, label_encoder_country, scaler
+def to_fund_or_not(requested_round, required_funding, predicted_success):
+        row = indicators_table[indicators_table['funding_round'] == requested_round] # pick the row of the requested funding round
+        if row.empty:
+            return "Model does not cover the requested round. Please select from A to H."
+        avg_funding = row["avg_funding"].values[0]
+        avg_success = row["avg_success"].values[0]
+
+        # just for robustness, check it's not empty
+        if pd.isnull(avg_funding) or pd.isnull(avg_success):
+            return "Missing data on average funding for this round type."
+
+        max_funding = avg_funding * predicted_success / avg_success
+        if required_funding <= max_funding:
+            return print(f"---\n""Positive funding reco - The funding request of", required_funding, "is below the maximum recommendation of",round(max_funding, 0), "by", round((max_funding*100/required_funding-100),1) ,"%\n")
+        return print(f"---\n""Negative funding reco - The funding request of", required_funding, "is above the maximum recommendation of",round(max_funding, 0), "by", round((max_funding*100/required_funding-100),1)*-1 ,"%\n")
+def total_function(clf,average_round_a, average_round_b, average_round_c, average_round_d, label_encoder_market, label_encoder_country, scaler):
+
+  # gather inputs
+  requested_round = input("\nWhat round are you raising? A, B, C or D?  ->  ")
+  required_funding = int(input("\nHow much money are your raising?  ->  "))
+  market = input("\nWhat's the key market?  ->  ")
+  country = input("\nWhat's the HQ country code?  ->  ")
+  nb_categories= int(input("\nhow many categories are you serving?  ->  "))
+  r_A = int(input("\nWhat was the value of your Round A, if any?  ->  "))
+  r_B = int(input("\nWhat was the value of your Round B, if any?  ->  "))
+  r_C = int(input("\nWhat was the value of your Round C, if any?  ->  "))
+  r_D = int(input("\nWhat was the value of your Round D, if any?  ->  "))
+  found_date = input("\nWhen was your founding date in YYYY-MM-DD?  ->  ")
+  first_fund_date = input("\nWhen was your first funding round date in YYYY-MM-DD?  ->  ")
+  last_fund_date = input("\nWhen was your last funding round date in YYYY-MM-DD?  ->  ")
+  print("")
+
+  # encode string values
+  market_num = label_encoder_market.transform([market])
+  country_num = label_encoder_country.transform([country])
+
+  # Date-Features
+  # do the necesary conversions and calculations to create the feature values
+  if first_fund_date != "0":
+    first_funding_at = pd.to_datetime(first_fund_date)
+    time_to_first_funding = "dummy" # we need to assign a dummy value so that the function doesn't break
+  else: time_to_first_funding = 0
+
+  if last_fund_date != "0":
+    last_funding_at = pd.to_datetime(last_fund_date)
+    time_to_last_funding = "dummy"
+  else: time_to_last_funding = 0
+
+  if found_date != "0":
+    founded_at = pd.to_datetime(found_date)
+  else: return "go get a company that actually exists, Dude! "
+
+  #Date-Calculations
+  if time_to_last_funding != 0:
+    time_to_last_funding = last_funding_at - first_funding_at
+    time_to_last_funding = time_to_last_funding.days
+  if time_to_first_funding != 0:
+    time_to_first_funding = first_funding_at - founded_at
+    time_to_first_funding = time_to_first_funding.days
+
+  # Round Growth Features
+  if r_A != 0 & r_B != 0:
+    round_B_growth = r_B / r_A
+  else: round_B_growth = 0
+
+  if (r_A + r_B) != 0 & r_C != 0:
+    round_C_growth = r_C / (r_A + r_B)
+  else: round_C_growth = 0
+
+  if (r_A + r_B + r_C) & r_D != 0:
+    round_D_growth = r_D / (r_A + r_B + r_C)
+  else: round_D_growth = 0
+
+  # Round Size Features
+  if r_A != 0:
+    round_A_percentage = r_A / average_round_a
+  else: round_A_percentage = 0
+
+  if r_B != 0:
+    round_B_percentage = r_B / average_round_b
+  else: round_B_percentage = 0
+
+  if r_C != 0:
+    round_C_percentage = r_C / average_round_c
+  else: round_C_percentage = 0
+
+  if r_D != 0:
+    round_D_percentage = r_D / average_round_d
+  else: round_D_percentage = 0
+
+  # build a data array to create a dataframe
+  data = [[market_num,country_num,nb_categories,round_B_growth,round_C_growth, round_D_growth, round_A_percentage,round_B_percentage, round_C_percentage, round_D_percentage,time_to_last_funding, time_to_first_funding]]
+
+  # build a dataframe, which can then be used for prediction
+  startup_company = pd.DataFrame(data, columns=['market_numeric','country_numeric','nb_categories','round_B_growth',
+      'round_C_growth', 'round_D_growth', 'round_A_percentage', 'round_B_percentage', 'round_C_percentage', 'round_D_percentage','time_to_last_funding', 'time_to_first_funding'])
+
+  # scale the data, using the same fitted scaler from the Model
+  startup = pd.DataFrame(scaler.transform(startup_company), columns=scaler.get_feature_names_out())
+
+  # do the prediction
+  y_pred = clf.predict(startup)[0]
+  if y_pred == 1.0:
+    print(f"---\nSuccess - The Model predicts this venture to be successful! \nThe confidence for this prediction is {round(clf.predict_proba(startup)[0][1],2)}\n")
+
+  else: print(f"---\nPredicted failure - The Model predicts this venture not to be successful! \nThe confidence for this prediction is {round(clf.predict_proba(startup)[0][0],2)}\n")
+
+  return requested_round, required_funding, startup
+if __name__ == "__main__":
+   import pandas as pd
+   import numpy as np
+   from sklearn.preprocessing import LabelEncoder
+   from sklearn.model_selection import train_test_split
+   from imblearn.under_sampling import RandomUnderSampler
+   from sklearn.preprocessing import RobustScaler
+   from sklearn.linear_model import LogisticRegression
+   df, indicators_table = load_tables()
+   df, average_round_a, average_round_b, average_round_c, average_round_d =rounds_avg_features_creation(df)
+   model, label_encoder_market, label_encoder_country, scaler = model_build(df)
+   print("model ready for operation\n")
+   requested_round, required_funding, startup = total_function(model,average_round_a, average_round_b, average_round_c, average_round_d, label_encoder_market, label_encoder_country, scaler)
+   to_fund_or_not(requested_round, required_funding, round(model.predict_proba(startup)[0][0],2))
